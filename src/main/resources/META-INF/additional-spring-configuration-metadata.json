@@ -1,0 +1,34 @@
+{
+  "properties": [
+    {
+      "name": "oss.client.accessKey",
+      "type": "java.lang.String",
+      "description": "Description for oss.client.accessKey."
+    },
+    {
+      "name": "oss.client.secretKey",
+      "type": "java.lang.String",
+      "description": "Description for oss.client.secretKey."
+    },
+    {
+      "name": "oss.client.region",
+      "type": "java.lang.String",
+      "description": "Description for oss.client.region."
+    },
+    {
+      "name": "oss.client.bucket",
+      "type": "java.lang.String",
+      "description": "Description for oss.client.bucket."
+    },
+    {
+      "name": "wx.open.appId",
+      "type": "java.lang.String",
+      "description": "Description for wx.open.appId."
+    },
+    {
+      "name": "wx.open.appSecret",
+      "type": "java.lang.String",
+      "description": "Description for wx.open.appSecret."
+    }
+  ]
+}

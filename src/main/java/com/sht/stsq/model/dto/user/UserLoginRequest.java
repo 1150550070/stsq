@@ -1,0 +1,20 @@
+package com.sht.stsq.model.dto.user;
+
+import java.io.Serializable;
+import lombok.Data;
+
+/**
+ * 用户登录请求
+ *
+ * @author <a href="https://gitee.com/ht115055/stsq">刷题神器</a>
+ * 
+ */
+@Data
+public class UserLoginRequest implements Serializable {
+
+    private static final long serialVersionUID = 3191241716373120793L;
+
+    private String userAccount;
+
+    private String userPassword;
+}
