@@ -22,10 +22,10 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class OssManager {
 
-    @Autowired
+    @Resource
     private OssClientConfig ossClientConfig;
 
-    @Autowired
+    @Resource
     private OSS ossClient;
 
     /**
