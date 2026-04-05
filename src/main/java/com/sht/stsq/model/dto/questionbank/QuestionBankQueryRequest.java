@@ -55,7 +55,7 @@ public class QuestionBankQueryRequest extends PageRequest implements Serializabl
     /**
      * 需要关联查询题目列表
      */
-    private Boolean needQueryQuestionList;
+    private boolean needQueryQuestionList;
 
     /**
      * 创建用户 id

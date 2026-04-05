@@ -6,6 +6,7 @@ import { Provider, useDispatch } from "react-redux";
 import store, { AppDispatch } from "@/stores";
 import { getLoginUserUsingGet } from "@/api/userController";
 import AccessLayout from "@/access/AccessLayout";
+import { setLoginUser } from "@/stores/loginUser";
 import "./globals.css";
 
 /**
@@ -24,6 +25,7 @@ const InitLayout: React.FC<
     const res = await getLoginUserUsingGet();
     if (res.data) {
       // 更新全局用户状态
+      dispatch(setLoginUser(res.data));
     } else {
       // 仅用于测试
       // setTimeout(() => {
@@ -46,23 +48,23 @@ const InitLayout: React.FC<
 };
 
 export default function RootLayout({
-  children,
-}: Readonly<{
+                                     children,
+                                   }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
     <html lang="zh">
-      <body>
-        <AntdRegistry>
-          <Provider store={store}>
-            <InitLayout>
-              <BasicLayout>
-                <AccessLayout>{children}</AccessLayout>
-              </BasicLayout>
-            </InitLayout>
-          </Provider>
-        </AntdRegistry>
-      </body>
+    <body>
+    <AntdRegistry>
+      <Provider store={store}>
+        <InitLayout>
+          <BasicLayout>
+            <AccessLayout>{children}</AccessLayout>
+          </BasicLayout>
+        </InitLayout>
+      </Provider>
+    </AntdRegistry>
+    </body>
     </html>
   );
 }
