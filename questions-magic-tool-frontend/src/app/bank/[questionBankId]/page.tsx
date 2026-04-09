@@ -67,7 +67,7 @@ export default async function BankPage({ params }) {
       <div style={{ marginBottom: 16 }} />
       <QuestionList
         questionBankId={questionBankId}
-        questionList={bank.questionPage?.records ?? []}
+        questionList={bank.questionPage?.records || []}
         cardTitle={`题目列表（${bank.questionPage?.total || 0}）`}
       />
     </div>

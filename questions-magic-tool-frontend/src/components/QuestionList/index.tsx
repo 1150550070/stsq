@@ -6,8 +6,9 @@ import "./index.css";
 
 interface Props {
   questionBankId?: number;
+
+  cardTitle?: React.ReactNode;
   questionList: API.QuestionVO[];
-  cardTitle?: string;
 }
 
 /**
