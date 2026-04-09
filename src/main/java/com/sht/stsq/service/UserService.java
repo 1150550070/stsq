@@ -6,6 +6,7 @@ import com.sht.stsq.model.dto.user.UserQueryRequest;
 import com.sht.stsq.model.entity.User;
 import com.sht.stsq.model.vo.LoginUserVO;
 import com.sht.stsq.model.vo.UserVO;
+
 import java.util.List;
 import javax.servlet.http.HttpServletRequest;
 import me.chanjar.weixin.common.bean.WxOAuth2UserInfo;
@@ -117,5 +118,15 @@ public interface UserService extends IService<User> {
      * @return
      */
     QueryWrapper<User> getQueryWrapper(UserQueryRequest userQueryRequest);
+
+    /*
+     * 添加用户签到
+     */
+    boolean addUserSignIn(Long userId);
+
+    /*
+     * 查询用户签到
+     */
+    List<Integer> getUserSignIn(Long userId, Integer year);
 
 }

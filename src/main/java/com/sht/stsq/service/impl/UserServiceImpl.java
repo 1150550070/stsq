@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sht.stsq.common.ErrorCode;
 import com.sht.stsq.constant.CommonConstant;
+import com.sht.stsq.constant.RedisConstant;
 import com.sht.stsq.exception.BusinessException;
 import com.sht.stsq.mapper.UserMapper;
 import com.sht.stsq.model.dto.user.UserQueryRequest;
@@ -16,13 +17,17 @@ import com.sht.stsq.model.vo.LoginUserVO;
 import com.sht.stsq.model.vo.UserVO;
 import com.sht.stsq.service.UserService;
 import com.sht.stsq.utils.SqlUtils;
-import java.util.ArrayList;
-import java.util.List;
+
+import java.time.LocalDate;
+import java.time.Year;
+import java.util.*;
 import java.util.stream.Collectors;
 import javax.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import me.chanjar.weixin.common.bean.WxOAuth2UserInfo;
 import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RBitSet;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
@@ -41,6 +46,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      * 盐值，混淆密码
      */
     public static final String SALT = "yydw";
+    private final RedissonClient redissonClient;
+
+    public UserServiceImpl(RedissonClient redissonClient) {
+        this.redissonClient = redissonClient;
+    }
 
     @Override
     public long userRegister(String userAccount, String userPassword, String checkPassword) {
@@ -268,5 +278,45 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         queryWrapper.orderBy(SqlUtils.validSortField(sortField), sortOrder.equals(CommonConstant.SORT_ORDER_ASC),
                 sortField);
         return queryWrapper;
+    }
+
+    @Override
+    public boolean addUserSignIn(Long userId) {
+        LocalDate data = LocalDate.now();
+        String key = RedisConstant.getUserSignInRedisKey(data.getYear(), userId);
+        RBitSet bitSet = redissonClient.getBitSet(key);
+
+        int dayOfYear = data.getDayOfYear();
+
+        boolean b = bitSet.get(dayOfYear);
+        if(!b) {
+            //没签到,需要签到
+            return bitSet.set(dayOfYear, true);
+        }
+
+        return true;
+    }
+
+    @Override
+    public List<Integer> getUserSignIn(Long userId, Integer year) {
+        if (year == null) {
+            LocalDate localDate = LocalDate.now();
+            year = localDate.getYear();
+        }
+        String key = RedisConstant.getUserSignInRedisKey(year, userId);
+        RBitSet signInBitSet = redissonClient.getBitSet(key);
+        // 加载 BitSet 到内存中，避免后续读取时发送多次请求
+        BitSet bitSet = signInBitSet.asBitSet();
+
+        //统计签到的日期
+        List<Integer> dayList = new ArrayList<>();
+
+        int index = bitSet.nextSetBit(0);
+        while (index >= 0) {
+            dayList.add(index);
+            index = bitSet.nextSetBit(index + 1);
+        }
+
+        return dayList;
     }
 }

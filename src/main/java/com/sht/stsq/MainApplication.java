@@ -13,7 +13,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * @author <a href="https://gitee.com/ht115055/stsq">刷题神器</a>
  * 
  */
-// todo 如需开启 Redis，须移除 exclude 中的内容
 @SpringBootApplication()
 @MapperScan("com.sht.stsq.mapper")
 @EnableScheduling

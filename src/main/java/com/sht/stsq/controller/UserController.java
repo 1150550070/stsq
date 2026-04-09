@@ -21,7 +21,9 @@ import com.sht.stsq.model.vo.LoginUserVO;
 import com.sht.stsq.model.vo.UserVO;
 import com.sht.stsq.service.UserService;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -31,14 +33,10 @@ import me.chanjar.weixin.common.bean.WxOAuth2UserInfo;
 import me.chanjar.weixin.common.bean.oauth2.WxOAuth2AccessToken;
 import me.chanjar.weixin.mp.api.WxMpService;
 import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
 import org.springframework.util.DigestUtils;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import static com.sht.stsq.service.impl.UserServiceImpl.SALT;
 
@@ -58,6 +56,9 @@ public class UserController {
 
     @Resource
     private WxOpenConfig wxOpenConfig;
+
+    @Resource
+    private RedissonClient redissonClient;
 
     // region 登录相关
 
@@ -316,5 +317,30 @@ public class UserController {
         boolean result = userService.updateById(user);
         ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
         return ResultUtils.success(true);
+    }
+
+    //添加用户签到
+    @PostMapping("/add/sign_in")
+    public BaseResponse<Boolean> addUserSignIn(HttpServletRequest request) {
+        User loginUser = userService.getLoginUser(request);
+        Long userId = loginUser.getId();
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        boolean result = userService.addUserSignIn(userId);
+        return ResultUtils.success(result);
+    }
+
+    //查询用户签到
+    @GetMapping("/get/sign_in")
+    public BaseResponse<List<Integer>> getUserSignOut(Integer year ,HttpServletRequest request) {
+        User loginUser = userService.getLoginUser(request);
+        Long userId = loginUser.getId();
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+        }
+        List userSignIn = userService.getUserSignIn(userId, year);
+
+        return ResultUtils.success(userSignIn);
     }
 }
