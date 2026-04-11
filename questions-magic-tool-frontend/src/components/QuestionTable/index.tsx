@@ -37,6 +37,15 @@ const QuestionTable: React.FC = (props: Props) => {
    * 表格列配置
    */
   const columns: ProColumns<API.QuestionVO>[] = [
+
+    {
+      title: "搜索",
+      dataIndex: "searchText",
+      valueType: "text",
+      hideInTable: true,
+    },
+
+
     {
       title: "标题",
       dataIndex: "title",

@@ -15,7 +15,7 @@ import lombok.Data;
  * @author <a href="https://gitee.com/ht115055/stsq">刷题神器</a>
  * 
  */
-@TableName(value = "post")
+@TableName(value = "question")
 @Data
 public class Post implements Serializable {
 
@@ -40,15 +40,15 @@ public class Post implements Serializable {
      */
     private String tags;
 
-    /**
-     * 点赞数
-     */
-    private Integer thumbNum;
+//    /**
+//     * 点赞数
+//     */
+//    private Integer thumbNum;
 
-    /**
-     * 收藏数
-     */
-    private Integer favourNum;
+//    /**
+//     * 收藏数
+//     */
+//    private Integer favourNum;
 
     /**
      * 创建用户 id
