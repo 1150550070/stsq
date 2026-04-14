@@ -12,27 +12,29 @@ import com.sht.stsq.common.ResultUtils;
 import com.sht.stsq.constant.UserConstant;
 import com.sht.stsq.exception.BusinessException;
 import com.sht.stsq.exception.ThrowUtils;
-import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionAddRequest;
-import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionQueryRequest;
-import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionRemoveRequest;
-import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionUpdateRequest;
+import com.sht.stsq.model.dto.questionbankquestion.*;
+import com.sht.stsq.model.entity.Question;
 import com.sht.stsq.model.entity.QuestionBankQuestion;
 import com.sht.stsq.model.entity.User;
 import com.sht.stsq.model.vo.QuestionBankQuestionVO;
 import com.sht.stsq.service.QuestionBankQuestionService;
+import com.sht.stsq.service.QuestionService;
 import com.sht.stsq.service.UserService;
 import lombok.extern.slf4j.Slf4j;
+import net.bytebuddy.implementation.bytecode.Throw;
 import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+import java.util.List;
 
 /**
  * 题库题目关联接口
  *
  * @author <a href="https://gitee.com/ht115055/stsq">刷题神器</a>
- *
  */
 @RestController
 @RequestMapping("/questionBankQuestion")
@@ -44,6 +46,8 @@ public class QuestionBankQuestionController {
 
     @Resource
     private UserService userService;
+    @Autowired
+    private QuestionService questionService;
 
     // region 增删改查
 
@@ -170,7 +174,7 @@ public class QuestionBankQuestionController {
      */
     @PostMapping("/list/page/vo")
     public BaseResponse<Page<QuestionBankQuestionVO>> listQuestionBankQuestionVOByPage(@RequestBody QuestionBankQuestionQueryRequest questionBankQuestionQueryRequest,
-                                                               HttpServletRequest request) {
+                                                                                       HttpServletRequest request) {
         long current = questionBankQuestionQueryRequest.getCurrent();
         long size = questionBankQuestionQueryRequest.getPageSize();
         // 限制爬虫
@@ -191,7 +195,7 @@ public class QuestionBankQuestionController {
      */
     @PostMapping("/my/list/page/vo")
     public BaseResponse<Page<QuestionBankQuestionVO>> listMyQuestionBankQuestionVOByPage(@RequestBody QuestionBankQuestionQueryRequest questionBankQuestionQueryRequest,
-                                                                 HttpServletRequest request) {
+                                                                                         HttpServletRequest request) {
         ThrowUtils.throwIf(questionBankQuestionQueryRequest == null, ErrorCode.PARAMS_ERROR);
         // 补充查询条件，只查询当前登录用户的数据
         User loginUser = userService.getLoginUser(request);
@@ -228,5 +232,50 @@ public class QuestionBankQuestionController {
 
     }
 
+    /*
+     * 向题库批量添加题目
+     */
+    @PostMapping("/add/batch")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+
+    public BaseResponse<Boolean> batchAddQuestionsToQuestionBank(@RequestBody QuestionBankQuestionBatchAddRequest questionBankQuestionBatchAddRequest
+            , HttpServletRequest request) {
+        ThrowUtils.throwIf(questionBankQuestionBatchAddRequest == null, ErrorCode.PARAMS_ERROR);
+        User loginUser = userService.getLoginUser(request);
+        List<Long> questionIds = questionBankQuestionBatchAddRequest.getQuestionIds();
+        Long questionBankId = questionBankQuestionBatchAddRequest.getQuestionBankId();
+        Boolean result = questionBankQuestionService.batchAddQuestionsToQuestionBank(questionIds, questionBankId, loginUser);
+        return ResultUtils.success(result);
+    }
+
+
+    /*
+     * 向题库批量移除题目
+     */
+    @PostMapping("/remove/batch")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+
+    public BaseResponse<Boolean> batchRemoveQuestionsFromQuestionBank(@RequestBody QuestionBankQuestionBatchRemoveRequest questionBankQuestionBatchRemovedRequest
+            , HttpServletRequest request) {
+        ThrowUtils.throwIf(questionBankQuestionBatchRemovedRequest == null, ErrorCode.PARAMS_ERROR);
+        User loginUser = userService.getLoginUser(request);
+        List<Long> questionIds = questionBankQuestionBatchRemovedRequest.getQuestionIds();
+        Long questionBankId = questionBankQuestionBatchRemovedRequest.getQuestionBankId();
+        Boolean result = questionBankQuestionService.batchRemoveQuestionsFromQuestionBank(questionIds, questionBankId, loginUser);
+        return ResultUtils.success(result);
+    }
+
+    /*
+     * 批量删除题目
+     */
+    @PostMapping("/delete/batch")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<Boolean> batchDeleteQuestions(@RequestBody
+                                                          QuestionBatchDeleteRequest questionBatchDeleteRequest,
+                                                      HttpServletRequest request) {
+        ThrowUtils.throwIf(questionBatchDeleteRequest == null, ErrorCode.PARAMS_ERROR);
+        questionService.batchDeleteQuestions(questionBatchDeleteRequest.getQuestionIdList());
+        return ResultUtils.success(true);
+    }
 
 }

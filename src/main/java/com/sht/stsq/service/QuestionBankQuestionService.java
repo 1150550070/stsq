@@ -4,9 +4,10 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionQueryRequest;
-import com.sht.stsq.model.entity.Question;
 import com.sht.stsq.model.entity.QuestionBankQuestion;
+import com.sht.stsq.model.entity.User;
 import com.sht.stsq.model.vo.QuestionBankQuestionVO;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.servlet.http.HttpServletRequest;
 import java.util.List;
@@ -54,4 +55,11 @@ public interface QuestionBankQuestionService extends IService<QuestionBankQuesti
     Page<QuestionBankQuestionVO> getQuestionBankQuestionVOPage(Page<QuestionBankQuestion> questionBankQuestionPage, HttpServletRequest request);
 
 
+    Boolean batchAddQuestionsToQuestionBank(List<Long> questionIds, Long questionBankId, User loginUser);
+
+
+    Boolean batchRemoveQuestionsFromQuestionBank(List<Long> questionIds, Long questionBankId, User loginUser);
+
+
+    void batchAddQuestionsToBankInner(List<QuestionBankQuestion> questionBankQuestions);
 }

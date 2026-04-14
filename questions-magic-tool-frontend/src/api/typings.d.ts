@@ -666,4 +666,20 @@ declare namespace API {
     userProfile?: string;
     userRole?: string;
   };
+
+  type QuestionBankQuestionBatchAddRequest = {
+    questionBankId?: number;
+    questionIdList?: number[];
+  };
+
+  type QuestionBankQuestionBatchRemoveRequest = {
+    questionBankId?: number;
+    questionIdList?: number[];
+  };
+
+  type QuestionBatchDeleteRequest = {
+    questionIdList?: number[];
+  };
 }
+
+

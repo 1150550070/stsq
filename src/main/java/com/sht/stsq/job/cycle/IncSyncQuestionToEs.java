@@ -1,12 +1,9 @@
 package com.sht.stsq.job.cycle;
 
-import com.sht.stsq.esdao.PostEsDao;
 import com.sht.stsq.esdao.QuestionEsDao;
-import com.sht.stsq.mapper.PostMapper;
 import com.sht.stsq.mapper.QuestionMapper;
-import com.sht.stsq.model.dto.post.PostEsDTO;
 import com.sht.stsq.model.dto.question.QuestionEsDTO;
-import com.sht.stsq.model.entity.Post;
+
 import java.util.Date;
 import java.util.List;
 import java.util.stream.Collectors;

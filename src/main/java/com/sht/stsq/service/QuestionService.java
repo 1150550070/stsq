@@ -6,8 +6,10 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.sht.stsq.model.dto.question.QuestionQueryRequest;
 import com.sht.stsq.model.entity.Question;
 import com.sht.stsq.model.vo.QuestionVO;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.servlet.http.HttpServletRequest;
+import java.util.List;
 
 /**
  * 题目服务
@@ -62,4 +64,6 @@ public interface QuestionService extends IService<Question> {
     //ES搜索题目
     Page<Question> searchFromEs(QuestionQueryRequest questionQueryRequest);
 
+
+    void batchDeleteQuestions(List<Long> questionIdList);
 }
