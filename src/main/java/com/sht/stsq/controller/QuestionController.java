@@ -2,6 +2,11 @@ package com.sht.stsq.controller;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.json.JSONUtil;
+import com.alibaba.csp.sentinel.Entry;
+import com.alibaba.csp.sentinel.EntryType;
+import com.alibaba.csp.sentinel.SphU;
+import com.alibaba.csp.sentinel.Tracer;
+import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -19,17 +24,20 @@ import com.sht.stsq.model.dto.question.QuestionAddRequest;
 import com.sht.stsq.model.dto.question.QuestionEditRequest;
 import com.sht.stsq.model.dto.question.QuestionQueryRequest;
 import com.sht.stsq.model.dto.question.QuestionUpdateRequest;
+import com.sht.stsq.model.dto.questionbank.QuestionBankQueryRequest;
 import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionQueryRequest;
 import com.sht.stsq.model.entity.Question;
 import com.sht.stsq.model.entity.QuestionBank;
 import com.sht.stsq.model.entity.QuestionBankQuestion;
 import com.sht.stsq.model.entity.User;
+import com.sht.stsq.model.vo.QuestionBankVO;
 import com.sht.stsq.model.vo.QuestionVO;
 import com.sht.stsq.service.QuestionBankQuestionService;
 import com.sht.stsq.service.QuestionBankService;
 import com.sht.stsq.service.QuestionService;
 import com.sht.stsq.service.UserService;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.poi.sl.draw.geom.CustomGeometry;
 import org.apache.tomcat.Jar;
 import org.aspectj.weaver.ast.Var;
 import org.springframework.beans.BeanUtils;
@@ -193,28 +201,48 @@ public class QuestionController {
     @PostMapping("/list/page/vo")
     public BaseResponse<Page<QuestionVO>> listQuestionVOByPage(@RequestBody QuestionQueryRequest questionQueryRequest,
                                                                HttpServletRequest request) {
-        long current = questionQueryRequest.getCurrent();
+        ThrowUtils.throwIf(questionQueryRequest == null, ErrorCode.PARAMS_ERROR);
         long size = questionQueryRequest.getPageSize();
-
-        QueryWrapper<Question> queryWrapper = questionService.getQueryWrapper(questionQueryRequest);
-
-        //根据题库查询题目列表接口
-        Long questionBankId = questionQueryRequest.getQuestionBankId();
-
-        if (questionBankId != null) {
-            LambdaQueryWrapper<QuestionBankQuestion> lambdaQueryWrapper = Wrappers.lambdaQuery(QuestionBankQuestion.class)
-                    .select(QuestionBankQuestion::getQuestionId)
-                    .eq(QuestionBankQuestion::getQuestionBankId, questionBankId);
-            List<QuestionBankQuestion> questionList = questionBankQuestionService.list(lambdaQueryWrapper);
-        }
-
-
         // 限制爬虫
         ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
-        // 查询数据库
-        Page<Question> questionPage = questionService.page(new Page<>(current, size), queryWrapper);
-        // 获取封装类
-        return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
+
+        //基于IP限流
+        String remoteAddr = request.getRemoteAddr();
+        Entry entry = null;
+        try {
+            entry = SphU.entry("listQuestionVOByPage", EntryType.IN, 1, remoteAddr);
+
+            // 查询数据库
+            Page<Question> questionPage = questionService.listQuestionByPage(questionQueryRequest);
+            // 获取封装类
+            return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
+        }catch (Throwable ex) {
+            if (!BlockException.isBlockException(ex)){
+                Tracer.trace(ex);
+                return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"系统错误");
+            }
+
+            //降级操作
+            if (ex instanceof BlockException) {
+                return handleFallback(questionQueryRequest,request,ex);
+            }
+            //限流操作
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"访问过于频繁,请稍后再试");
+        }finally {
+            if (entry != null) {
+                entry.exit(1, remoteAddr);
+            }
+        }
+
+    }
+
+    /**
+     * listQuestionVOByPage 降级操作：直接返回本地数据
+     */
+    public BaseResponse<Page<QuestionVO>> handleFallback(@RequestBody QuestionQueryRequest questionQueryRequest,
+                                                             HttpServletRequest request, Throwable ex) {
+        // 可以返回本地数据或空数据
+        return ResultUtils.success(null);
     }
 
     /**
