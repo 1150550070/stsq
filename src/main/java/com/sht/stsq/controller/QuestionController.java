@@ -23,28 +23,18 @@ import com.sht.stsq.common.DeleteRequest;
 import com.sht.stsq.common.ErrorCode;
 import com.sht.stsq.common.ResultUtils;
 import com.sht.stsq.constant.UserConstant;
+import com.sht.stsq.esdao.QuestionEsDao;
 import com.sht.stsq.exception.BusinessException;
 import com.sht.stsq.exception.ThrowUtils;
-import com.sht.stsq.model.dto.question.QuestionAddRequest;
-import com.sht.stsq.model.dto.question.QuestionAiOptimizeRequest;
-import com.sht.stsq.model.dto.question.QuestionEditRequest;
-import com.sht.stsq.model.dto.question.QuestionQueryRequest;
-import com.sht.stsq.model.dto.question.QuestionUpdateRequest;
+import com.sht.stsq.model.dto.question.*;
+import com.sht.stsq.model.entity.*;
 import com.sht.stsq.model.vo.QuestionAiOptimizeResult;
-import com.sht.stsq.model.dto.question.QuestionTagExtractRequest;
 import com.sht.stsq.model.vo.QuestionTagExtractResult;
 import com.sht.stsq.model.dto.questionbank.QuestionBankQueryRequest;
 import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionQueryRequest;
-import com.sht.stsq.model.entity.Question;
-import com.sht.stsq.model.entity.QuestionBank;
-import com.sht.stsq.model.entity.QuestionBankQuestion;
-import com.sht.stsq.model.entity.User;
 import com.sht.stsq.model.vo.QuestionBankVO;
 import com.sht.stsq.model.vo.QuestionVO;
-import com.sht.stsq.service.QuestionBankQuestionService;
-import com.sht.stsq.service.QuestionBankService;
-import com.sht.stsq.service.QuestionService;
-import com.sht.stsq.service.UserService;
+import com.sht.stsq.service.*;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.sl.draw.geom.CustomGeometry;
 import org.apache.tomcat.Jar;
@@ -84,6 +74,12 @@ public class QuestionController {
 
     @Resource
     private WebClient aiWebClient;
+
+    @Resource
+    private QuestionEsDao  questionEsDao;
+
+    @Resource
+    private QuestionChatRecordService questionChatRecordService;
 
     // region 增删改查
 
@@ -461,6 +457,49 @@ public class QuestionController {
         // 3. 创建 SseEmitter，0L 表示不设置超时时间（由客户端控制断开）
         SseEmitter emitter = new SseEmitter(0L);
 
+        User loginUser = userService.getLoginUser(request);
+
+        // [A] 查询 MySQL 获取历史对话记录 (限制最多查询近 5 条，防止 Token 爆炸)
+        List<QuestionChatRecord> recordList = questionChatRecordService.list(
+                new LambdaQueryWrapper<QuestionChatRecord>()
+                        .eq(QuestionChatRecord::getQuestionId, questionId)
+                        .eq(QuestionChatRecord::getUserId, loginUser.getId())
+                        .orderByAsc(QuestionChatRecord::getCreateTime) // 按时间正序，保证对话连贯性
+                        .last("LIMIT 5")
+        );
+
+        // 将 Entity 转为 Python 期望的结构: [{"role": "user", "content": "..."}, ...]
+        List<Map<String, String>> chatHistory = new ArrayList<>();
+        if (CollUtil.isNotEmpty(recordList)) {
+            for (QuestionChatRecord record : recordList) {
+                Map<String, String> msg = new HashMap<>();
+                msg.put("role", record.getRole());
+                msg.put("content", record.getContent());
+                chatHistory.add(msg);
+            }
+        }
+
+        // [B] RAG 检索：去 ES 搜索与用户提问最相关的扩展题目
+        // 假设 questionEsDao 中有一个 searchByKeyword 的方法，这里取前 4 条备选
+        List<QuestionEsDTO> esResults = questionEsDao.searchByKeyword(userMessage, 4);
+        List<Map<String, String>> relatedContext = new ArrayList<>();
+
+        if (CollUtil.isNotEmpty(esResults)) {
+            for (QuestionEsDTO esDoc : esResults) {
+                // 必须排除当前正在答疑的题目自己，避免上下文重复
+                if (!esDoc.getId().equals(questionId)) {
+                    Map<String, String> qCtx = new HashMap<>();
+                    qCtx.put("title", esDoc.getTitle());
+                    // 为了省 Token，这里只传 ES 里的标准答案/解析，不传题干
+                    qCtx.put("answer", esDoc.getAnswer());
+                    relatedContext.add(qCtx);
+                    // 我们只取最相关的 Top 3
+                    if (relatedContext.size() >= 3) break;
+                }
+            }
+        }
+
+
         // 4. 构造发给 Python 的请求体 (严格对应 Python 的 AiChatReq)
         Map<String, Object> pyReqBody = new HashMap<>();
         pyReqBody.put("question_id", questionId);
@@ -468,12 +507,28 @@ public class QuestionController {
         pyReqBody.put("content", question.getContent() != null ? question.getContent() : "");
         pyReqBody.put("answer", question.getAnswer() != null ? question.getAnswer() : "");
         pyReqBody.put("user_message", userMessage);
-        // 如果前端有传 chatHistory，可以在此接收并映射，这里暂时传空列表
-        pyReqBody.put("chat_history", new ArrayList<>());
+        pyReqBody.put("chat_history", chatHistory);
+        pyReqBody.put("related_questions", relatedContext);
+
+
+        // 🌟 准备一个容器，用于在内存中悄悄拼接 AI 的每一个字
+        // WebClient 的 onNext 是串行触发的，因此用 StringBuilder 是线程安全的
+        // ... [上方代码保持不变，直到 pyReqBody.put("related_questions", relatedContext);] ...
 
         // 5. 异步非阻塞调用 Python 边车接流
-        // 在 subscribe 外部定义一个原子变量，用来标记流是否已经结束
         java.util.concurrent.atomic.AtomicBoolean isCompleted = new java.util.concurrent.atomic.AtomicBoolean(false);
+        StringBuilder aiFullReplyBuilder = new StringBuilder();
+
+        // 🌟 核心修复 1：将存库逻辑提取为一个独立任务，确保在各种断开场景下都能被执行
+        Runnable saveRecordTask = () -> {
+            String aiFullReply = aiFullReplyBuilder.toString();
+            if (StrUtil.isNotBlank(aiFullReply)) {
+                log.info("【AI流式响应结束】准备异步存库，回复长度：{} 字符", aiFullReply.length());
+                questionChatRecordService.saveChatRecordAsync(questionId, loginUser.getId(), userMessage, aiFullReply);
+            } else {
+                log.warn("【AI流式响应结束】未能收集到有效回复，放弃存库。");
+            }
+        };
 
         aiWebClient.post()
                 .uri("/api/ai/chat/stream")
@@ -482,43 +537,49 @@ public class QuestionController {
                 .retrieve()
                 .bodyToFlux(String.class)
                 .subscribe(
-                        // 正常接收数据块
+                        // 【回调 1：正常接收数据块】
                         data -> {
-                            // 如果已经标记为结束，直接丢弃数据，不再尝试发送
-                            if (isCompleted.get()) {
-                                return;
-                            }
+                            if (isCompleted.get()) return;
                             try {
+                                // 1. 发送给前端 (SseEmitter 底层会自动包装成 data: {内容}\n\n)
                                 emitter.send(data);
+
+                                // 2. 存库拦截：WebClient 已经帮我们剥离了协议头，直接追加纯内容
+                                String chunkText = data.replace("\\n", "\n"); // 还原换行符
+                                aiFullReplyBuilder.append(chunkText);
+
                             } catch (Exception e) {
-                                // 发送失败（通常是客户端断开），立刻标记完成，并结束 emitter
                                 if (isCompleted.compareAndSet(false, true)) {
-                                    log.warn("客户端已断开或推送异常，终止推流: {}", e.getMessage());
+                                    log.warn("客户端已提前断开，终止推流，强制触发存库...");
                                     emitter.completeWithError(e);
+                                    saveRecordTask.run(); // 客户端断开也要存库
                                 }
                             }
                         },
-                        // 发生上游异常时
+                        // 【回调 2：发生异常时】
                         err -> {
                             if (isCompleted.compareAndSet(false, true)) {
                                 log.error("AI 边车流式调用异常", err);
                                 try {
-                                    emitter.send("data: ⚠️ AI 大脑暂时断线了，请稍后再试。\n\n");
+                                    // 🌟 修复 UI 显示 "data:" 的 bug，直接传纯文本
+                                    emitter.send("⚠️ AI 导师的大脑暂时离线了，请稍后再试。");
                                 } catch (Exception ignored) {}
                                 emitter.completeWithError(err);
+                                saveRecordTask.run();
                             }
                         },
-                        // 数据流正常发送完毕时
+                        // 【回调 3：流彻底正常结束时触发】
                         () -> {
                             if (isCompleted.compareAndSet(false, true)) {
                                 emitter.complete();
+                                saveRecordTask.run(); // 正常结束触发存库
                             }
                         }
                 );
 
-        // 方法立即返回 emitter，不阻塞主线程，后续数据靠上面 subscribe 的异步回调推送
         return emitter;
     }
+
 
     // ==========================================
     // 👇 Sentinel 流式降级与限流兜底方法

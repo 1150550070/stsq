@@ -107,28 +107,43 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from typing import List
 # 删除了 Pydantic 和 OutputParser 相关的导入，因为不需要 JSON 了
 
-async def ai_chat_stream(title: str, content: str, answer: str, user_message: str, chat_history: List[dict] = []):
+async def ai_chat_stream(title: str, content: str, answer: str, user_message: str, chat_history: List[dict] = [], related_questions: List[dict] = []):
     """
     根据题目上下文和历史对话，流式回答用户的提问，严防跑题。
-    chat_history: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+    加入了 RAG 机制，能结合题库其他题目进行扩展解答。
     """
-    # 构建基础 System 提示词 (去掉了 format_instructions，明确要求输出 Markdown)
+
+    # ==========================================
+    # 🌟 1. 动态组装 RAG 知识库文本
+    # ==========================================
+    rag_context = ""
+    if related_questions:
+        rag_context = "\n【题库相关扩展知识（RAG 外挂大脑）】\n"
+        for i, q in enumerate(related_questions):
+            rag_context += f"{i+1}. 关联题目：{q.get('title')}\n参考解析：{q.get('answer')}\n\n"
+
+    # ==========================================
+    # 🌟 2. 构建包含 RAG 区域的 System Prompt
+    # ==========================================
     system_prompt = f"""你是一个友好的面试辅导导师，专门解答用户在刷题过程中遇到的疑问。
 
-【当前题目上下文】
+【当前正在刷的题目】
 标题：{title}
 内容：{content}
 官方解析：{answer}
+{rag_context}
 
 【你的职责规则】
-1. 你的回答必须严格基于上述【当前题目上下文】。
-2. 对于此题目相关的问题，你需要热心、通俗易懂地解答，必要时可以补充代码示例或底层原理。
-3. 如果用户的提问完全脱离了当前这道题（比如问“今天天气怎么样”、“怎么写个高并发电商系统”），请委婉地拒绝回答并提醒用户聚焦于当前题目。
+1. 优先基于【当前正在刷的题目】进行解答。
+2. 如果用户的提问涉及到其他知识点，或者进行对比，请充分利用上方提供的【题库相关扩展知识】进行关联解答，展现出全局视野。
+3. 如果用户的提问完全脱离了当前题目和扩展知识（比如问“今天天气怎么样”），请委婉地拒绝回答并提醒用户聚焦于当前题目。
 4. 请直接使用 Markdown 排版回答，不要包含任何 JSON 结构。"""
 
     messages = [SystemMessage(content=system_prompt)]
 
-    # 载入历史记录
+    # ==========================================
+    # 🌟 3. 载入真实历史记录 (此时传入的已是 MySQL 里的数据)
+    # ==========================================
     for msg in chat_history:
         role = msg.get("role", "")
         msg_content = msg.get("content", "")
@@ -140,11 +155,12 @@ async def ai_chat_stream(title: str, content: str, answer: str, user_message: st
     # 加入当前最新提问
     messages.append(HumanMessage(content=user_message))
 
-    # 🌟 关键修改：使用 astream 获取流式输出，并包装为 SSE 格式
+    # ==========================================
+    # 🌟 4. 使用 astream 获取流式输出 (打字机效果)
+    # ==========================================
     async for chunk in llm.astream(messages):
         if chunk.content:
-            # 必须严格遵守 SSE 协议格式：以 "data: " 开头，以 "\n\n" 结尾
-            # 注意将文本中的换行符替换，防止破坏 SSE 结构
+            # 安全替换换行符并包装为 SSE 格式
             safe_content = chunk.content.replace('\n', '\\n')
             yield f"data: {safe_content}\n\n"
 

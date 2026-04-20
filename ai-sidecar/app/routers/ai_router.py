@@ -4,7 +4,8 @@ from app.services.ai_service import optimize_question_content, extract_tags, ai_
 
 router = APIRouter(prefix="/api/ai", tags=["AI 辅助功能"])
 
-#1. 题目智能润色与增强
+
+# 1. 题目智能润色与增强
 @router.post("/optimize-question")
 async def optimize_question(req: QuestionOptimizeReq):
     try:
@@ -12,22 +13,22 @@ async def optimize_question(req: QuestionOptimizeReq):
         ai_result = await optimize_question_content(
             title=req.title,
             content=req.content,
-            tags=req.tags,      # 👈 传入从 DTO 接到的 tags
-            answer=req.answer   # 👈 传入从 DTO 接到的 answer
+            tags=req.tags,  # 👈 传入从 DTO 接到的 tags
+            answer=req.answer  # 👈 传入从 DTO 接到的 answer
         )
 
         # 将 Pydantic 对象转为字典返回给 Java
         return {
             "code": 200,
             "message": "success",
-            "data": ai_result.model_dump() # model_dump() 等价于 Java 的 fastjson toJSON()
+            "data": ai_result.model_dump()  # model_dump() 等价于 Java 的 fastjson toJSON()
         }
     except Exception as e:
         # 捕获异常，抛出 HTTP 500 错误
         raise HTTPException(status_code=500, detail=f"AI 服务调用失败: {str(e)}")
 
 
-#2. 题目标签智能提取
+# 2. 题目标签智能提取
 @router.post("/extract-tags")
 async def extract_tags_endpoint(req: TagExtractReq):
     """
@@ -49,6 +50,8 @@ async def extract_tags_endpoint(req: TagExtractReq):
 
 from fastapi.responses import StreamingResponse
 from app.services.ai_service import ai_chat_stream
+
+
 # 3.题目专属智能答疑
 @router.post("/chat/stream")
 async def chat_endpoint(req: AiChatReq):
@@ -66,7 +69,8 @@ async def chat_endpoint(req: AiChatReq):
                 content=req.content,
                 answer=req.answer,
                 user_message=req.user_message,
-                chat_history=chat_history_dicts
+                chat_history=chat_history_dicts,
+                related_questions=req.related_questions
             ),
             media_type="text/event-stream"
         )
@@ -74,7 +78,7 @@ async def chat_endpoint(req: AiChatReq):
         raise HTTPException(status_code=500, detail=f"AI 答疑调用失败: {str(e)}")
 
 
-#4. 题库健康度智能分析
+# 4. 题库健康度智能分析
 @router.post("/analyze-bank")
 async def analyze_bank_endpoint(req: BankAnalyzeReq):
     """
@@ -89,9 +93,7 @@ async def analyze_bank_endpoint(req: BankAnalyzeReq):
         return {
             "code": 200,
             "message": "success",
-            "data": ai_result.model_dump() # dict form of BankAnalyzeResult
+            "data": ai_result.model_dump()  # dict form of BankAnalyzeResult
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"题库健康度分析失败: {str(e)}")
-
-

@@ -27,11 +27,11 @@ class AiChatReq(BaseModel):
     answer: str = Field(..., description="官方给定的参考答案")
     user_message: str = Field(..., description="当前用户发送的提问")
     chat_history: List[ChatMessage] = Field(default=[], description="之前的聊天记录")
-
+    related_questions: List[dict] = Field(default=[], description="题库相关的扩展题目与解析")
 # AI 题库健康度分析请求 DTO
 class BankAnalyzeReq(BaseModel):
     bank_name: str = Field(..., description="题库名称")
     question_count: int = Field(..., description="该题库内的题目总数")
     tags_data: dict = Field(default={}, description="题库中的题目标签及对应的数量统计包，例如 {'Java': 50, 'JVM': 5}")
 
-
+
