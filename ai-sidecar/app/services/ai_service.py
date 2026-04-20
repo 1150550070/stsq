@@ -101,21 +101,18 @@ async def extract_tags(title: str, content: str = "") -> TagExtractResult:
 
 
 # ────────────────────────────────────────────────
-# 功能 3：题目专属智能答疑
+# 功能 3：题目专属智能答疑 (纯流式改造完毕)
 # ────────────────────────────────────────────────
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from typing import List
+# 删除了 Pydantic 和 OutputParser 相关的导入，因为不需要 JSON 了
 
-class AiChatResult(BaseModel):
-    ai_reply: str = Field(description="AI 对用户提问的解答，使用 Markdown 格式，语气要专业友好，并且结合题目上下文。")
-
-chat_parser = PydanticOutputParser(pydantic_object=AiChatResult)
-
-async def ai_chat(title: str, content: str, answer: str, user_message: str, chat_history: List[dict] = []) -> AiChatResult:
+async def ai_chat_stream(title: str, content: str, answer: str, user_message: str, chat_history: List[dict] = []):
     """
-    根据题目上下文和历史对话，回答用户的提问，严防跑题。
+    根据题目上下文和历史对话，流式回答用户的提问，严防跑题。
     chat_history: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
     """
-    # 构建基础 System 提示词
+    # 构建基础 System 提示词 (去掉了 format_instructions，明确要求输出 Markdown)
     system_prompt = f"""你是一个友好的面试辅导导师，专门解答用户在刷题过程中遇到的疑问。
 
 【当前题目上下文】
@@ -127,9 +124,7 @@ async def ai_chat(title: str, content: str, answer: str, user_message: str, chat
 1. 你的回答必须严格基于上述【当前题目上下文】。
 2. 对于此题目相关的问题，你需要热心、通俗易懂地解答，必要时可以补充代码示例或底层原理。
 3. 如果用户的提问完全脱离了当前这道题（比如问“今天天气怎么样”、“怎么写个高并发电商系统”），请委婉地拒绝回答并提醒用户聚焦于当前题目。
-4. 使用 Markdown 排版回答。
-
-{chat_parser.get_format_instructions()}"""
+4. 请直接使用 Markdown 排版回答，不要包含任何 JSON 结构。"""
 
     messages = [SystemMessage(content=system_prompt)]
 
@@ -145,11 +140,16 @@ async def ai_chat(title: str, content: str, answer: str, user_message: str, chat
     # 加入当前最新提问
     messages.append(HumanMessage(content=user_message))
 
-    # 调用模型并解析结果
-    response = await llm.ainvoke(messages)
-    
-    # 解析输出 (由于传入的不是链对象，直接用 parser 解析文本)
-    return chat_parser.parse(response.content)
+    # 🌟 关键修改：使用 astream 获取流式输出，并包装为 SSE 格式
+    async for chunk in llm.astream(messages):
+        if chunk.content:
+            # 必须严格遵守 SSE 协议格式：以 "data: " 开头，以 "\n\n" 结尾
+            # 注意将文本中的换行符替换，防止破坏 SSE 结构
+            safe_content = chunk.content.replace('\n', '\\n')
+            yield f"data: {safe_content}\n\n"
+
+    # ⚠️ 注意：最后调用模型 ainvoke 和 chat_parser.parse 的代码已经彻底删除！
+    # 因为在上面的循环中，模型的数据已经全部流向前端了。
 
 # ────────────────────────────────────────────────
 # 功能 4：题库健康度智能分析
@@ -159,13 +159,15 @@ class BankAnalyzeResult(BaseModel):
     current_distribution: dict = Field(description="当前题库的分布情况概述，如 {'基础': 60, '进阶': 30, '底层原理': 10}")
     suggested_topics: List[str] = Field(description="建议补充的考点或题目方向列表")
 
+
 bank_analyze_parser = PydanticOutputParser(pydantic_object=BankAnalyzeResult)
+
 
 async def analyze_bank(bank_name: str, question_count: int, tags_data: dict) -> BankAnalyzeResult:
     """
     根据题库名称、题目数量以及标签分布统计，让 AI 对该题库的健康度进行打分评估。
     """
-    
+
     prompt_template = """你是一个高级教研总监。请根据下列题库统计数据，分析该题库的健康度和知识点覆盖情况，指出知识盲点，并建议补充哪些考点。
 
 【题库概况】
@@ -177,9 +179,9 @@ async def analyze_bank(bank_name: str, question_count: int, tags_data: dict) -> 
 结合常见大厂面试要求，请严格按照以下格式 JSON 输出你的分析。
 {format_instructions}
 """
-    
+
     chain = ChatPromptTemplate.from_template(prompt_template) | llm | bank_analyze_parser
-    
+
     result = await chain.ainvoke({
         "bank_name": bank_name,
         "question_count": question_count,

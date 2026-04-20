@@ -50,12 +50,17 @@ import org.apache.poi.sl.draw.geom.CustomGeometry;
 import org.apache.tomcat.Jar;
 import org.aspectj.weaver.ast.Var;
 import org.springframework.beans.BeanUtils;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 题目接口
@@ -76,6 +81,9 @@ public class QuestionController {
 
     @Resource
     private UserService userService;
+
+    @Resource
+    private WebClient aiWebClient;
 
     // region 增删改查
 
@@ -430,88 +438,123 @@ public class QuestionController {
         return ResultUtils.success(fallbackResult);
     }
 
+
     /**
-     * 第一阶段：题目专属智能答疑
+     * 题目专属智能答疑 - SSE 流式打字机接口
+     * 注意 Produces 指定了 TEXT_EVENT_STREAM_VALUE
      */
-    @PostMapping("/ai-chat")
+    @GetMapping(value = "/ai-chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @SentinelResource(
-            value = "aiChat",
-            blockHandler = "aiChatBlockHandler", // 👈 限流处理
-            fallback = "aiChatFallback"          // 👈 降级兜底
+            value = "aiChatStream",
+            blockHandler = "aiChatStreamBlockHandler", // 流式接口的限流处理
+            fallback = "aiChatStreamFallback"          // 流式接口的降级兜底
     )
-    public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChat(
-            @RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest) {
-
-        ThrowUtils.throwIf(aiChatRequest == null, ErrorCode.PARAMS_ERROR);
-        Long questionId = aiChatRequest.getQuestionId();
+    public SseEmitter aiChatStream(Long questionId, String userMessage, HttpServletRequest request) {
+        // 1. 基础校验
         ThrowUtils.throwIf(questionId == null || questionId <= 0, ErrorCode.PARAMS_ERROR, "题目 ID 不合法");
-        ThrowUtils.throwIf(StrUtil.isBlank(aiChatRequest.getUserMessage()), ErrorCode.PARAMS_ERROR, "提问内容不能为空");
+        ThrowUtils.throwIf(StrUtil.isBlank(userMessage), ErrorCode.PARAMS_ERROR, "提问内容不能为空");
 
-        // 查询题目信息
+        // 2. 查询题目信息
         Question question = questionService.getById(questionId);
         ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR, "题目不存在");
 
-        // 构造传给 Python 的请求体
-        JSONObject pyReqBody = new JSONObject();
-        pyReqBody.set("question_id", questionId);
-        pyReqBody.set("title", question.getTitle() != null ? question.getTitle() : "");
-        pyReqBody.set("content", question.getContent() != null ? question.getContent() : "");
-        pyReqBody.set("answer", question.getAnswer() != null ? question.getAnswer() : "");
-        pyReqBody.set("user_message", aiChatRequest.getUserMessage());
+        // 3. 创建 SseEmitter，0L 表示不设置超时时间（由客户端控制断开）
+        SseEmitter emitter = new SseEmitter(0L);
 
-        // 处理聊天记录
-        pyReqBody.set("chat_history", aiChatRequest.getChatHistory() != null ? aiChatRequest.getChatHistory() : new java.util.ArrayList<>());
+        // 4. 构造发给 Python 的请求体 (严格对应 Python 的 AiChatReq)
+        Map<String, Object> pyReqBody = new HashMap<>();
+        pyReqBody.put("question_id", questionId);
+        pyReqBody.put("title", question.getTitle() != null ? question.getTitle() : "");
+        pyReqBody.put("content", question.getContent() != null ? question.getContent() : "");
+        pyReqBody.put("answer", question.getAnswer() != null ? question.getAnswer() : "");
+        pyReqBody.put("user_message", userMessage);
+        // 如果前端有传 chatHistory，可以在此接收并映射，这里暂时传空列表
+        pyReqBody.put("chat_history", new ArrayList<>());
 
-        HttpResponse pyResponse;
+        // 5. 异步非阻塞调用 Python 边车接流
+        // 在 subscribe 外部定义一个原子变量，用来标记流是否已经结束
+        java.util.concurrent.atomic.AtomicBoolean isCompleted = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        aiWebClient.post()
+                .uri("/api/ai/chat/stream")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(pyReqBody)
+                .retrieve()
+                .bodyToFlux(String.class)
+                .subscribe(
+                        // 正常接收数据块
+                        data -> {
+                            // 如果已经标记为结束，直接丢弃数据，不再尝试发送
+                            if (isCompleted.get()) {
+                                return;
+                            }
+                            try {
+                                emitter.send(data);
+                            } catch (Exception e) {
+                                // 发送失败（通常是客户端断开），立刻标记完成，并结束 emitter
+                                if (isCompleted.compareAndSet(false, true)) {
+                                    log.warn("客户端已断开或推送异常，终止推流: {}", e.getMessage());
+                                    emitter.completeWithError(e);
+                                }
+                            }
+                        },
+                        // 发生上游异常时
+                        err -> {
+                            if (isCompleted.compareAndSet(false, true)) {
+                                log.error("AI 边车流式调用异常", err);
+                                try {
+                                    emitter.send("data: ⚠️ AI 大脑暂时断线了，请稍后再试。\n\n");
+                                } catch (Exception ignored) {}
+                                emitter.completeWithError(err);
+                            }
+                        },
+                        // 数据流正常发送完毕时
+                        () -> {
+                            if (isCompleted.compareAndSet(false, true)) {
+                                emitter.complete();
+                            }
+                        }
+                );
+
+        // 方法立即返回 emitter，不阻塞主线程，后续数据靠上面 subscribe 的异步回调推送
+        return emitter;
+    }
+
+    // ==========================================
+    // 👇 Sentinel 流式降级与限流兜底方法
+    // 注意：返回值和参数列表必须和原方法完全一致！
+    // ==========================================
+
+    /**
+     * 智能答疑 (流式) 限流处理：触发并发规则时快速拒绝
+     */
+    public SseEmitter aiChatStreamBlockHandler(Long questionId, String userMessage, HttpServletRequest request, BlockException ex) {
+        log.warn("AI 答疑(流式)触发限流：{}", ex.getMessage());
+        SseEmitter emitter = new SseEmitter(0L);
         try {
-            pyResponse = HttpRequest.post("http://127.0.0.1:8000/api/ai/chat")
-                    .header("Content-Type", "application/json")
-                    .body(pyReqBody.toString())
-                    .timeout(30_000)
-                    .execute();
+            emitter.send("data: ⚠️ 当前咨询人数过多，系统触发限流保护，请您稍等几秒后再试~\n\n");
+            emitter.complete();
         } catch (Exception e) {
-            log.error("AI 边车调用超时或网络异常（智能答疑）", e);
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
+            emitter.completeWithError(e);
         }
-
-        if (!pyResponse.isOk()) {
-            log.error("AI 边车返回异常状态码（智能答疑）: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
-        }
-
-        JSONObject pyResult = JSONUtil.parseObj(pyResponse.body());
-        int pyCode = pyResult.getInt("code", -1);
-        if (pyCode != 200) {
-            String pyMsg = pyResult.getStr("message", "未知错误");
-            log.error("AI 边车业务错误（智能答疑）: {}", pyMsg);
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 提问失败：" + pyMsg);
-        }
-
-        JSONObject dataObj = pyResult.getJSONObject("data");
-        com.sht.stsq.model.vo.QuestionAiChatResult result = new com.sht.stsq.model.vo.QuestionAiChatResult();
-        result.setAiReply(dataObj.getStr("ai_reply"));
-
-        return ResultUtils.success(result);
+        return emitter;
     }
 
     /**
-     * 智能答疑 限流处理：触发并发规则时快速拒绝
+     * 智能答疑 (流式) 降级处理：调用超时或系统异常时兜底
      */
-    public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChatBlockHandler(@RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest, BlockException ex) {
-        log.warn("AI 答疑触发限流：{}", ex.getMessage());
-        com.sht.stsq.model.vo.QuestionAiChatResult result = new com.sht.stsq.model.vo.QuestionAiChatResult();
-        result.setAiReply("⚠️ 当前咨询人数过多，系统触发限流保护，请您稍等几秒后再试~");
-        return ResultUtils.success(result);
+    public SseEmitter aiChatStreamFallback(Long questionId, String userMessage, HttpServletRequest request, Throwable ex) {
+        log.error("触发 AI 答疑(流式)降级：{}", ex.getMessage());
+        SseEmitter emitter = new SseEmitter(0L);
+        try {
+            emitter.send("data: 🌧️ 抱歉，AI 导师的大脑暂时离线了（服务开小差）。请稍后再向我提问吧！\n\n");
+            emitter.complete();
+        } catch (Exception e) {
+            emitter.completeWithError(e);
+        }
+        return emitter;
     }
 
-    /**
-     * 智能答疑 降级处理：调用超时或报错时兜底
-     */
-    public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChatFallback(@RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest, Throwable ex) {
-        log.error("触发 AI 答疑降级：{}", ex.getMessage());
-        com.sht.stsq.model.vo.QuestionAiChatResult result = new com.sht.stsq.model.vo.QuestionAiChatResult();
-        result.setAiReply("🌧️ 抱歉，AI 导师的大脑暂时离线了（服务开小差）。请稍后再向我提问吧！");
-        return ResultUtils.success(result);
-    }
+
 }
 

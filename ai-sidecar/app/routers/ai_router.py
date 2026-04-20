@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.schemas.question_dto import QuestionOptimizeReq, TagExtractReq, AiChatReq, BankAnalyzeReq
-from app.services.ai_service import optimize_question_content, extract_tags, ai_chat, analyze_bank
+from app.services.ai_service import optimize_question_content, extract_tags, ai_chat_stream, analyze_bank
 
 router = APIRouter(prefix="/api/ai", tags=["AI 辅助功能"])
 
@@ -47,9 +47,10 @@ async def extract_tags_endpoint(req: TagExtractReq):
         raise HTTPException(status_code=500, detail=f"AI 标签提取失败: {str(e)}")
 
 
-
+from fastapi.responses import StreamingResponse
+from app.services.ai_service import ai_chat_stream
 # 3.题目专属智能答疑
-@router.post("/chat")
+@router.post("/chat/stream")
 async def chat_endpoint(req: AiChatReq):
     """
     题目专属智能答疑
@@ -57,19 +58,18 @@ async def chat_endpoint(req: AiChatReq):
     try:
         # Pydantic List 转 Python dict
         chat_history_dicts = [{"role": msg.role, "content": msg.content} for msg in req.chat_history]
-        
-        ai_result = await ai_chat(
-            title=req.title,
-            content=req.content,
-            answer=req.answer,
-            user_message=req.user_message,
-            chat_history=chat_history_dicts
+
+        # 🌟 关键修改：使用 StreamingResponse 包装生成器
+        return StreamingResponse(
+            ai_chat_stream(
+                title=req.title,
+                content=req.content,
+                answer=req.answer,
+                user_message=req.user_message,
+                chat_history=chat_history_dicts
+            ),
+            media_type="text/event-stream"
         )
-        return {
-            "code": 200,
-            "message": "success",
-            "data": ai_result.model_dump() # {"ai_reply": "..."}
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 答疑调用失败: {str(e)}")
 
