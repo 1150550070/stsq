@@ -1,6 +1,10 @@
 package com.sht.stsq.controller;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
+import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.alibaba.csp.sentinel.Entry;
 import com.alibaba.csp.sentinel.EntryType;
@@ -21,9 +25,13 @@ import com.sht.stsq.constant.UserConstant;
 import com.sht.stsq.exception.BusinessException;
 import com.sht.stsq.exception.ThrowUtils;
 import com.sht.stsq.model.dto.question.QuestionAddRequest;
+import com.sht.stsq.model.dto.question.QuestionAiOptimizeRequest;
 import com.sht.stsq.model.dto.question.QuestionEditRequest;
 import com.sht.stsq.model.dto.question.QuestionQueryRequest;
 import com.sht.stsq.model.dto.question.QuestionUpdateRequest;
+import com.sht.stsq.model.vo.QuestionAiOptimizeResult;
+import com.sht.stsq.model.dto.question.QuestionTagExtractRequest;
+import com.sht.stsq.model.vo.QuestionTagExtractResult;
 import com.sht.stsq.model.dto.questionbank.QuestionBankQueryRequest;
 import com.sht.stsq.model.dto.questionbankquestion.QuestionBankQuestionQueryRequest;
 import com.sht.stsq.model.entity.Question;
@@ -315,6 +323,182 @@ public class QuestionController {
         return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
     }
 
+    /**
+     * AI 题目润色（仅管理员可用）
+     * 将题目信息转发至 Python AI 边车，返回润色后的结构化结果。
+     *
+     * @param optimizeRequest AI 润色请求体
+     * @return 润色结果 VO
+     */
+    @PostMapping("/ai-optimize")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<QuestionAiOptimizeResult> aiOptimizeQuestion(
+            @RequestBody QuestionAiOptimizeRequest optimizeRequest) {
 
+        ThrowUtils.throwIf(optimizeRequest == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(optimizeRequest.getTitle() == null || optimizeRequest.getTitle().isBlank(),
+                ErrorCode.PARAMS_ERROR, "题目标题不能为空");
 
+        // 构建发送给 Python 边车的请求体（字段名与 Python Pydantic schema 一致）
+        JSONObject pyReqBody = new JSONObject();
+        pyReqBody.set("question_id", optimizeRequest.getQuestionId() != null ? optimizeRequest.getQuestionId() : 0);
+        pyReqBody.set("title", optimizeRequest.getTitle());
+        pyReqBody.set("content", optimizeRequest.getContent() != null ? optimizeRequest.getContent() : "");
+        pyReqBody.set("tags", optimizeRequest.getTags() != null ? optimizeRequest.getTags() : new ArrayList<>());
+        pyReqBody.set("answer", optimizeRequest.getAnswer() != null ? optimizeRequest.getAnswer() : "");
+
+        // 调用 Python 边车，超时 30s，防止大模型卡顿拖垮主线程池
+        HttpResponse pyResponse;
+        try {
+            pyResponse = HttpRequest.post("http://127.0.0.1:8000/api/ai/optimize-question")
+                    .header("Content-Type", "application/json")
+                    .body(pyReqBody.toString())
+                    .timeout(30_000)
+                    .execute();
+        } catch (Exception e) {
+            log.error("AI 边车调用超时或网络异常", e);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
+        }
+
+        if (!pyResponse.isOk()) {
+            log.error("AI 边车返回异常状态码: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
+        }
+
+        // 解析 Python 返回的 {code, message, data} 结构
+        JSONObject pyResult = JSONUtil.parseObj(pyResponse.body());
+        int pyCode = pyResult.getInt("code", -1);
+        if (pyCode != 200) {
+            String pyMsg = pyResult.getStr("message", "未知错误");
+            log.error("AI 边车业务错误: {}", pyMsg);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 润色失败：" + pyMsg);
+        }
+
+        // 将 data 字段映射到 Java VO（snake_case -> camelCase 用 Hutool Bean 工具）
+        JSONObject dataObj = pyResult.getJSONObject("data");
+        QuestionAiOptimizeResult result = new QuestionAiOptimizeResult();
+        result.setOptimizedTitle(dataObj.getStr("optimized_title"));
+        result.setOptimizedContent(dataObj.getStr("optimized_content"));
+        result.setOptimizedAnswer(dataObj.getStr("optimized_answer"));
+        result.setComplexityAnalysis(dataObj.getStr("complexity_analysis"));
+        result.setTips(dataObj.getStr("tips"));
+
+        return ResultUtils.success(result);
+    }
+
+    /**
+     * AI 标签智能提取（仅管理员可用）
+     * 根据题目标题和内容，调用 Python 边车提取 3~6 个核心技术标签。
+     *
+     * @param extractRequest 标签提取请求体
+     * @return 标签列表 VO
+     */
+    @PostMapping("/ai-extract-tags")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<QuestionTagExtractResult> aiExtractTags(
+            @RequestBody QuestionTagExtractRequest extractRequest) {
+
+        ThrowUtils.throwIf(extractRequest == null, ErrorCode.PARAMS_ERROR);
+        ThrowUtils.throwIf(extractRequest.getTitle() == null || extractRequest.getTitle().isBlank(),
+                ErrorCode.PARAMS_ERROR, "题目标题不能为空");
+
+        // 构建发送给 Python 边车的请求体
+        JSONObject pyReqBody = new JSONObject();
+        pyReqBody.set("title", extractRequest.getTitle());
+        pyReqBody.set("content", extractRequest.getContent() != null ? extractRequest.getContent() : "");
+
+        // 调用 Python 边车，超时 30s
+        HttpResponse pyResponse;
+        try {
+            pyResponse = HttpRequest.post("http://127.0.0.1:8000/api/ai/extract-tags")
+                    .header("Content-Type", "application/json")
+                    .body(pyReqBody.toString())
+                    .timeout(30_000)
+                    .execute();
+        } catch (Exception e) {
+            log.error("AI 边车调用超时或网络异常（标签提取）", e);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
+        }
+
+        if (!pyResponse.isOk()) {
+            log.error("AI 边车返回异常状态码（标签提取）: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
+        }
+
+        // 解析 Python 返回的 {code, message, data: {tags: [...]}} 结构
+        JSONObject pyResult = JSONUtil.parseObj(pyResponse.body());
+        int pyCode = pyResult.getInt("code", -1);
+        if (pyCode != 200) {
+            String pyMsg = pyResult.getStr("message", "未知错误");
+            log.error("AI 边车业务错误（标签提取）: {}", pyMsg);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 标签提取失败：" + pyMsg);
+        }
+
+        JSONObject dataObj = pyResult.getJSONObject("data");
+        List<String> tags = dataObj.getJSONArray("tags").toList(String.class);
+
+        QuestionTagExtractResult result = new QuestionTagExtractResult();
+        result.setTags(tags);
+
+        return ResultUtils.success(result);
+    }
+
+    /**
+     * 第一阶段：题目专属智能答疑
+     */
+    @PostMapping("/ai-chat")
+    public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChat(
+            @RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest) {
+        
+        ThrowUtils.throwIf(aiChatRequest == null, ErrorCode.PARAMS_ERROR);
+        Long questionId = aiChatRequest.getQuestionId();
+        ThrowUtils.throwIf(questionId == null || questionId <= 0, ErrorCode.PARAMS_ERROR, "题目 ID 不合法");
+        ThrowUtils.throwIf(StrUtil.isBlank(aiChatRequest.getUserMessage()), ErrorCode.PARAMS_ERROR, "提问内容不能为空");
+
+        // 查询题目信息
+        Question question = questionService.getById(questionId);
+        ThrowUtils.throwIf(question == null, ErrorCode.NOT_FOUND_ERROR, "题目不存在");
+
+        // 构造传给 Python 的请求体
+        JSONObject pyReqBody = new JSONObject();
+        pyReqBody.set("question_id", questionId);
+        pyReqBody.set("title", question.getTitle() != null ? question.getTitle() : "");
+        pyReqBody.set("content", question.getContent() != null ? question.getContent() : "");
+        pyReqBody.set("answer", question.getAnswer() != null ? question.getAnswer() : "");
+        pyReqBody.set("user_message", aiChatRequest.getUserMessage());
+        
+        // 处理聊天记录
+        pyReqBody.set("chat_history", aiChatRequest.getChatHistory() != null ? aiChatRequest.getChatHistory() : new java.util.ArrayList<>());
+
+        HttpResponse pyResponse;
+        try {
+            pyResponse = HttpRequest.post("http://127.0.0.1:8000/api/ai/chat")
+                    .header("Content-Type", "application/json")
+                    .body(pyReqBody.toString())
+                    .timeout(30_000)
+                    .execute();
+        } catch (Exception e) {
+            log.error("AI 边车调用超时或网络异常（智能答疑）", e);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
+        }
+
+        if (!pyResponse.isOk()) {
+            log.error("AI 边车返回异常状态码（智能答疑）: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
+        }
+
+        JSONObject pyResult = JSONUtil.parseObj(pyResponse.body());
+        int pyCode = pyResult.getInt("code", -1);
+        if (pyCode != 200) {
+            String pyMsg = pyResult.getStr("message", "未知错误");
+            log.error("AI 边车业务错误（智能答疑）: {}", pyMsg);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 提问失败：" + pyMsg);
+        }
+
+        JSONObject dataObj = pyResult.getJSONObject("data");
+        com.sht.stsq.model.vo.QuestionAiChatResult result = new com.sht.stsq.model.vo.QuestionAiChatResult();
+        result.setAiReply(dataObj.getStr("ai_reply"));
+
+        return ResultUtils.success(result);
+    }
 }

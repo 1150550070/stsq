@@ -532,6 +532,24 @@ declare namespace API {
     title?: string;
   };
 
+  /** AI 题库健康度分析请求 */
+  type QuestionBankAiAnalyzeRequest = {
+    bankId: number;
+  };
+
+  /** AI 题库健康度分析结果 */
+  type QuestionBankAiAnalyzeResult = {
+    healthScore?: number;
+    currentDistribution?: Record<string, number>;
+    suggestedTopics?: string[];
+  };
+
+  type BaseResponseQuestionBankAiAnalyzeResult_ = {
+    code?: number;
+    data?: QuestionBankAiAnalyzeResult;
+    message?: string;
+  };
+
   type QuestionBankVO = {
     createTime?: string;
     description?: string;
@@ -680,6 +698,71 @@ declare namespace API {
   type QuestionBatchDeleteRequest = {
     questionIdList?: number[];
   };
-}
 
+  /** AI 题目润色请求 */
+  type QuestionAiOptimizeRequest = {
+    questionId?: number;
+    title: string;
+    content?: string;
+    category?: string;
+    tags?: string[];
+    answer?: string;
+  };
+
+  /** AI 题目润色结果 */
+  type QuestionAiOptimizeResult = {
+    optimizedTitle?: string;
+    optimizedContent?: string;
+    optimizedAnswer?: string;
+    complexityAnalysis?: string | null;
+    tips?: string;
+  };
+
+  type BaseResponseQuestionAiOptimizeResult_ = {
+    code?: number;
+    data?: QuestionAiOptimizeResult;
+    message?: string;
+  };
+
+  /** AI 标签智能提取请求 */
+  type QuestionTagExtractRequest = {
+    title: string;
+    content?: string;
+  };
+
+  /** AI 标签智能提取结果 */
+  type QuestionTagExtractResult = {
+    tags?: string[];
+  };
+
+  type BaseResponseQuestionTagExtractResult_ = {
+    code?: number;
+    data?: QuestionTagExtractResult;
+    message?: string;
+  };
+
+  /** AI 答疑消息项 */
+  type AiChatMessage = {
+    role: string;
+    content: string;
+  };
+
+  /** AI 专属智能答疑请求 */
+  type QuestionAiChatRequest = {
+    questionId: number;
+    userMessage: string;
+    chatHistory?: AiChatMessage[];
+  };
+
+  /** AI 专属智能答疑结果 */
+  type QuestionAiChatResult = {
+    aiReply?: string;
+  };
+
+  type BaseResponseQuestionAiChatResult_ = {
+    code?: number;
+    data?: QuestionAiChatResult;
+    message?: string;
+  };
+}
 

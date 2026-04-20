@@ -153,3 +153,48 @@ export async function batchDeleteQuestionsUsingPost(
     ...(options || {}),
   });
 }
+
+/** aiOptimizeQuestion POST /api/question/ai-optimize */
+export async function aiOptimizeQuestionUsingPost(
+  body: API.QuestionAiOptimizeRequest,
+  options?: { [key: string]: any },
+) {
+  return request<API.BaseResponseQuestionAiOptimizeResult_>('/api/question/ai-optimize', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
+/** aiExtractTags POST /api/question/ai-extract-tags */
+export async function aiExtractTagsUsingPost(
+  body: API.QuestionTagExtractRequest,
+  options?: { [key: string]: any },
+) {
+  return request<API.BaseResponseQuestionTagExtractResult_>('/api/question/ai-extract-tags', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}
+
+/** aiChat POST /api/question/ai-chat */
+export async function aiChatUsingPost(
+  body: API.QuestionAiChatRequest,
+  options?: { [key: string]: any },
+) {
+  return request<API.BaseResponseQuestionAiChatResult_>('/api/question/ai-chat', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}

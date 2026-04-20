@@ -121,3 +121,18 @@ export async function updateQuestionBankUsingPost(
     ...(options || {}),
   });
 }
+
+/** aiAnalyzeBank POST /api/questionBank/ai-analyze */
+export async function aiAnalyzeBankUsingPost(
+  body: API.QuestionBankAiAnalyzeRequest,
+  options?: { [key: string]: any },
+) {
+  return request<API.BaseResponseQuestionBankAiAnalyzeResult_>('/api/questionBank/ai-analyze', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  });
+}

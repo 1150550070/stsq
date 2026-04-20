@@ -293,7 +293,102 @@ public class QuestionBankController {
         return ResultUtils.success(true);
     }
 
+    /**
+     * 第一阶段：题库健康度智能分析（宏观管理）
+     */
+    @PostMapping("/ai-analyze")
+    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    public BaseResponse<com.sht.stsq.model.vo.QuestionBankAiAnalyzeResult> aiAnalyze(
+            @RequestBody com.sht.stsq.model.dto.questionbank.QuestionBankAiAnalyzeRequest analyzeRequest) {
+        
+        ThrowUtils.throwIf(analyzeRequest == null, ErrorCode.PARAMS_ERROR);
+        Long bankId = analyzeRequest.getBankId();
+        ThrowUtils.throwIf(bankId == null || bankId <= 0, ErrorCode.PARAMS_ERROR, "题库 ID 不合法");
+
+        QuestionBank questionBank = questionBankService.getById(bankId);
+        ThrowUtils.throwIf(questionBank == null, ErrorCode.NOT_FOUND_ERROR, "题库不存在");
+
+        // 查询该题库下的所有题目
+        QuestionQueryRequest queryRequest = new QuestionQueryRequest();
+        queryRequest.setQuestionBankId(bankId);
+        queryRequest.setPageSize(10000); // 拉取全部题目用于统计
+        Page<Question> questionPage = questionService.listQuestionByPage(queryRequest);
+        java.util.List<Question> questions = questionPage.getRecords();
+
+        int questionCount = questions.size();
+        
+        // 统计 tags 数据
+        java.util.Map<String, Integer> tagsData = new java.util.HashMap<>();
+        for (Question q : questions) {
+            String tagsStr = q.getTags();
+            if (cn.hutool.core.util.StrUtil.isNotBlank(tagsStr)) {
+                try {
+                    java.util.List<String> tags = cn.hutool.json.JSONUtil.toList(tagsStr, String.class);
+                    for (String tag : tags) {
+                        tagsData.put(tag, tagsData.getOrDefault(tag, 0) + 1);
+                    }
+                } catch (Exception e) {
+                    log.error("解析题目 tags 异常, questionId: {}", q.getId(), e);
+                }
+            }
+        }
+
+        // 调用 Python 边车
+        cn.hutool.json.JSONObject pyReqBody = new cn.hutool.json.JSONObject();
+        pyReqBody.set("bank_name", questionBank.getTitle());
+        pyReqBody.set("question_count", questionCount);
+        pyReqBody.set("tags_data", tagsData);
+
+        cn.hutool.http.HttpResponse pyResponse;
+        try {
+            pyResponse = cn.hutool.http.HttpRequest.post("http://127.0.0.1:8000/api/ai/analyze-bank")
+                    .header("Content-Type", "application/json")
+                    .body(pyReqBody.toString())
+                    .timeout(30_000)
+                    .execute();
+        } catch (Exception e) {
+            log.error("AI 边车调用超时或网络异常（题库健康度分析）", e);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
+        }
+
+        if (!pyResponse.isOk()) {
+            log.error("AI 边车返回异常状态码（健康度分析）: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
+        }
+
+        cn.hutool.json.JSONObject pyResult = cn.hutool.json.JSONUtil.parseObj(pyResponse.body());
+        int pyCode = pyResult.getInt("code", -1);
+        if (pyCode != 200) {
+            String pyMsg = pyResult.getStr("message", "未知错误");
+            log.error("AI 边车业务错误（健康度分析）: {}", pyMsg);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "题库健康度分析失败：" + pyMsg);
+        }
+
+        cn.hutool.json.JSONObject dataObj = pyResult.getJSONObject("data");
+        com.sht.stsq.model.vo.QuestionBankAiAnalyzeResult result = new com.sht.stsq.model.vo.QuestionBankAiAnalyzeResult();
+        result.setHealthScore(dataObj.getInt("health_score"));
+        
+        // 解析 current_distribution
+        cn.hutool.json.JSONObject distObj = dataObj.getJSONObject("current_distribution");
+        java.util.Map<String, Integer> distMap = new java.util.HashMap<>();
+        if (distObj != null) {
+            for (String key : distObj.keySet()) {
+                distMap.put(key, distObj.getInt(key));
+            }
+        }
+        result.setCurrentDistribution(distMap);
+        
+        // 解析 suggested_topics
+        cn.hutool.json.JSONArray topicsArr = dataObj.getJSONArray("suggested_topics");
+        java.util.List<String> topics = new java.util.ArrayList<>();
+        if (topicsArr != null) {
+            topics = topicsArr.toList(String.class);
+        }
+        result.setSuggestedTopics(topics);
+
+        return ResultUtils.success(result);
+    }
+
     // endregion
-
-
 }
+

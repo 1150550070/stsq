@@ -1,6 +1,7 @@
 "use client";
 import CreateModal from "./components/CreateModal";
 import UpdateModal from "./components/UpdateModal";
+import AnalyzeModal from "./components/AnalyzeModal";
 import {
   deleteQuestionBankUsingPost,
   listQuestionBankByPageUsingPost,
@@ -22,6 +23,8 @@ const QuestionBankAdminPage: React.FC = () => {
   const [createModalVisible, setCreateModalVisible] = useState<boolean>(false);
   // 是否显示更新窗口
   const [updateModalVisible, setUpdateModalVisible] = useState<boolean>(false);
+  // 是否显示分析窗口
+  const [analyzeModalVisible, setAnalyzeModalVisible] = useState<boolean>(false);
   const actionRef = useRef<ActionType>();
   // 当前题库点击的数据
   const [currentRow, setCurrentRow] = useState<API.QuestionBank>();
@@ -109,6 +112,15 @@ const QuestionBankAdminPage: React.FC = () => {
       render: (_, record) => (
         <Space size="middle">
           <Typography.Link
+            style={{ color: '#52c41a' }}
+            onClick={() => {
+              setCurrentRow(record);
+              setAnalyzeModalVisible(true);
+            }}
+          >
+            健康分析
+          </Typography.Link>
+          <Typography.Link
             onClick={() => {
               setCurrentRow(record);
               setUpdateModalVisible(true);
@@ -185,6 +197,13 @@ const QuestionBankAdminPage: React.FC = () => {
         }}
         onCancel={() => {
           setUpdateModalVisible(false);
+        }}
+      />
+      <AnalyzeModal
+        visible={analyzeModalVisible}
+        oldData={currentRow}
+        onCancel={() => {
+          setAnalyzeModalVisible(false);
         }}
       />
     </PageContainer>
