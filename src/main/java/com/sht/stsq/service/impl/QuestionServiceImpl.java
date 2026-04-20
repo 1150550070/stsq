@@ -1,6 +1,10 @@
 package com.sht.stsq.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -11,11 +15,13 @@ import com.sht.stsq.constant.CommonConstant;
 import com.sht.stsq.exception.BusinessException;
 import com.sht.stsq.exception.ThrowUtils;
 import com.sht.stsq.mapper.QuestionMapper;
+import com.sht.stsq.model.dto.question.QuestionAiOptimizeRequest;
 import com.sht.stsq.model.dto.question.QuestionEsDTO;
 import com.sht.stsq.model.dto.question.QuestionQueryRequest;
 import com.sht.stsq.model.entity.Question;
 import com.sht.stsq.model.entity.QuestionBankQuestion;
 import com.sht.stsq.model.entity.User;
+import com.sht.stsq.model.vo.QuestionAiOptimizeResult;
 import com.sht.stsq.model.vo.QuestionVO;
 import com.sht.stsq.service.QuestionBankQuestionService;
 import com.sht.stsq.service.QuestionService;
@@ -323,6 +329,55 @@ public class QuestionServiceImpl extends ServiceImpl<QuestionMapper, Question> i
                 throw new BusinessException(ErrorCode.OPERATION_ERROR, "删除题目题库关联失败");
             }
         }
+    }
+
+    @Override
+    public QuestionAiOptimizeResult aiOptimizeQuestion(QuestionAiOptimizeRequest optimizeRequest) {
+
+        // 构建发送给 Python 边车的请求体（字段名与 Python Pydantic schema 一致）
+        JSONObject pyReqBody = new JSONObject();
+        pyReqBody.set("question_id", optimizeRequest.getQuestionId() != null ? optimizeRequest.getQuestionId() : 0);
+        pyReqBody.set("title", optimizeRequest.getTitle());
+        pyReqBody.set("content", optimizeRequest.getContent() != null ? optimizeRequest.getContent() : "");
+        pyReqBody.set("tags", optimizeRequest.getTags() != null ? optimizeRequest.getTags() : new ArrayList<>());
+        pyReqBody.set("answer", optimizeRequest.getAnswer() != null ? optimizeRequest.getAnswer() : "");
+
+        // 调用 Python 边车，超时 30s，防止大模型卡顿拖垮主线程池
+        HttpResponse pyResponse;
+        try {
+            pyResponse = HttpRequest.post("http://127.0.0.1:8000/api/ai/optimize-question")
+                    .header("Content-Type", "application/json")
+                    .body(pyReqBody.toString())
+                    .timeout(30_000)
+                    .execute();
+        } catch (Exception e) {
+            log.error("AI 边车调用超时或网络异常", e);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
+        }
+
+        if (!pyResponse.isOk()) {
+            log.error("AI 边车返回异常状态码: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
+        }
+
+        // 解析 Python 返回的 {code, message, data} 结构
+        JSONObject pyResult = JSONUtil.parseObj(pyResponse.body());
+        int pyCode = pyResult.getInt("code", -1);
+        if (pyCode != 200) {
+            String pyMsg = pyResult.getStr("message", "未知错误");
+            log.error("AI 边车业务错误: {}", pyMsg);
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 润色失败：" + pyMsg);
+        }
+
+        // 将 data 字段映射到 Java VO（snake_case -> camelCase 用 Hutool Bean 工具）
+        JSONObject dataObj = pyResult.getJSONObject("data");
+        QuestionAiOptimizeResult result = new QuestionAiOptimizeResult();
+        result.setOptimizedTitle(dataObj.getStr("optimized_title"));
+        result.setOptimizedContent(dataObj.getStr("optimized_content"));
+        result.setOptimizedAnswer(dataObj.getStr("optimized_answer"));
+        result.setComplexityAnalysis(dataObj.getStr("complexity_analysis"));
+        result.setTips(dataObj.getStr("tips"));
+        return  result;
     }
 
 

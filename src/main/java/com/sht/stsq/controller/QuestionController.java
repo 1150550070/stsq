@@ -10,6 +10,7 @@ import com.alibaba.csp.sentinel.Entry;
 import com.alibaba.csp.sentinel.EntryType;
 import com.alibaba.csp.sentinel.SphU;
 import com.alibaba.csp.sentinel.Tracer;
+import com.alibaba.csp.sentinel.annotation.SentinelResource;
 import com.alibaba.csp.sentinel.slots.block.BlockException;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -224,19 +225,19 @@ public class QuestionController {
             Page<Question> questionPage = questionService.listQuestionByPage(questionQueryRequest);
             // 获取封装类
             return ResultUtils.success(questionService.getQuestionVOPage(questionPage, request));
-        }catch (Throwable ex) {
-            if (!BlockException.isBlockException(ex)){
+        } catch (Throwable ex) {
+            if (!BlockException.isBlockException(ex)) {
                 Tracer.trace(ex);
-                return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"系统错误");
+                return ResultUtils.error(ErrorCode.SYSTEM_ERROR, "系统错误");
             }
 
             //降级操作
             if (ex instanceof BlockException) {
-                return handleFallback(questionQueryRequest,request,ex);
+                return handleFallback(questionQueryRequest, request, ex);
             }
             //限流操作
-            return ResultUtils.error(ErrorCode.SYSTEM_ERROR,"访问过于频繁,请稍后再试");
-        }finally {
+            return ResultUtils.error(ErrorCode.SYSTEM_ERROR, "访问过于频繁,请稍后再试");
+        } finally {
             if (entry != null) {
                 entry.exit(1, remoteAddr);
             }
@@ -248,7 +249,7 @@ public class QuestionController {
      * listQuestionVOByPage 降级操作：直接返回本地数据
      */
     public BaseResponse<Page<QuestionVO>> handleFallback(@RequestBody QuestionQueryRequest questionQueryRequest,
-                                                             HttpServletRequest request, Throwable ex) {
+                                                         HttpServletRequest request, Throwable ex) {
         // 可以返回本地数据或空数据
         return ResultUtils.success(null);
     }
@@ -332,6 +333,8 @@ public class QuestionController {
      */
     @PostMapping("/ai-optimize")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @SentinelResource(value = "aiOptimizeQuestion",
+            fallback = "aiOptimizeFallback")
     public BaseResponse<QuestionAiOptimizeResult> aiOptimizeQuestion(
             @RequestBody QuestionAiOptimizeRequest optimizeRequest) {
 
@@ -339,49 +342,7 @@ public class QuestionController {
         ThrowUtils.throwIf(optimizeRequest.getTitle() == null || optimizeRequest.getTitle().isBlank(),
                 ErrorCode.PARAMS_ERROR, "题目标题不能为空");
 
-        // 构建发送给 Python 边车的请求体（字段名与 Python Pydantic schema 一致）
-        JSONObject pyReqBody = new JSONObject();
-        pyReqBody.set("question_id", optimizeRequest.getQuestionId() != null ? optimizeRequest.getQuestionId() : 0);
-        pyReqBody.set("title", optimizeRequest.getTitle());
-        pyReqBody.set("content", optimizeRequest.getContent() != null ? optimizeRequest.getContent() : "");
-        pyReqBody.set("tags", optimizeRequest.getTags() != null ? optimizeRequest.getTags() : new ArrayList<>());
-        pyReqBody.set("answer", optimizeRequest.getAnswer() != null ? optimizeRequest.getAnswer() : "");
-
-        // 调用 Python 边车，超时 30s，防止大模型卡顿拖垮主线程池
-        HttpResponse pyResponse;
-        try {
-            pyResponse = HttpRequest.post("http://127.0.0.1:8000/api/ai/optimize-question")
-                    .header("Content-Type", "application/json")
-                    .body(pyReqBody.toString())
-                    .timeout(30_000)
-                    .execute();
-        } catch (Exception e) {
-            log.error("AI 边车调用超时或网络异常", e);
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务调用失败，请稍后重试");
-        }
-
-        if (!pyResponse.isOk()) {
-            log.error("AI 边车返回异常状态码: {}, body: {}", pyResponse.getStatus(), pyResponse.body());
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 服务返回异常：" + pyResponse.getStatus());
-        }
-
-        // 解析 Python 返回的 {code, message, data} 结构
-        JSONObject pyResult = JSONUtil.parseObj(pyResponse.body());
-        int pyCode = pyResult.getInt("code", -1);
-        if (pyCode != 200) {
-            String pyMsg = pyResult.getStr("message", "未知错误");
-            log.error("AI 边车业务错误: {}", pyMsg);
-            throw new BusinessException(ErrorCode.OPERATION_ERROR, "AI 润色失败：" + pyMsg);
-        }
-
-        // 将 data 字段映射到 Java VO（snake_case -> camelCase 用 Hutool Bean 工具）
-        JSONObject dataObj = pyResult.getJSONObject("data");
-        QuestionAiOptimizeResult result = new QuestionAiOptimizeResult();
-        result.setOptimizedTitle(dataObj.getStr("optimized_title"));
-        result.setOptimizedContent(dataObj.getStr("optimized_content"));
-        result.setOptimizedAnswer(dataObj.getStr("optimized_answer"));
-        result.setComplexityAnalysis(dataObj.getStr("complexity_analysis"));
-        result.setTips(dataObj.getStr("tips"));
+        QuestionAiOptimizeResult result = questionService.aiOptimizeQuestion(optimizeRequest);
 
         return ResultUtils.success(result);
     }
@@ -395,6 +356,8 @@ public class QuestionController {
      */
     @PostMapping("/ai-extract-tags")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @SentinelResource(value = "aiExtractTags",
+            fallback = "aiExtractTagsFallback")
     public BaseResponse<QuestionTagExtractResult> aiExtractTags(
             @RequestBody QuestionTagExtractRequest extractRequest) {
 
@@ -444,12 +407,41 @@ public class QuestionController {
     }
 
     /**
+     * 润色功能降级兜底：AI 超时或报错时，直接返回原题内容
+     */
+    public BaseResponse<QuestionAiOptimizeResult> aiOptimizeFallback(@RequestBody QuestionAiOptimizeRequest optimizeRequest, Throwable ex) {
+        log.error("触发 AI 润色降级：{}", ex.getMessage());
+        QuestionAiOptimizeResult fallbackResult = new QuestionAiOptimizeResult();
+        // 原样返回，或者加上提示后缀
+        fallbackResult.setOptimizedTitle(optimizeRequest.getTitle());
+        fallbackResult.setOptimizedContent(optimizeRequest.getContent() != null ? optimizeRequest.getContent() : "AI 服务繁忙，暂无法润色内容");
+        fallbackResult.setOptimizedAnswer(optimizeRequest.getAnswer() != null ? optimizeRequest.getAnswer() : "AI 服务繁忙，暂无解析");
+        fallbackResult.setTips("【系统提示】AI 服务暂不可用，已为您展示原始数据。");
+        return ResultUtils.success(fallbackResult);
+    }
+
+    /**
+     * 标签提取功能降级兜底：返回空列表或默认标签
+     */
+    public BaseResponse<QuestionTagExtractResult> aiExtractTagsFallback(@RequestBody QuestionTagExtractRequest extractRequest, Throwable ex) {
+        log.error("触发 AI 标签提取降级：{}", ex.getMessage());
+        QuestionTagExtractResult fallbackResult = new QuestionTagExtractResult();
+        fallbackResult.setTags(new ArrayList<>()); // 返回空集合，防止前端渲染报错
+        return ResultUtils.success(fallbackResult);
+    }
+
+    /**
      * 第一阶段：题目专属智能答疑
      */
     @PostMapping("/ai-chat")
+    @SentinelResource(
+            value = "aiChat",
+            blockHandler = "aiChatBlockHandler", // 👈 限流处理
+            fallback = "aiChatFallback"          // 👈 降级兜底
+    )
     public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChat(
             @RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest) {
-        
+
         ThrowUtils.throwIf(aiChatRequest == null, ErrorCode.PARAMS_ERROR);
         Long questionId = aiChatRequest.getQuestionId();
         ThrowUtils.throwIf(questionId == null || questionId <= 0, ErrorCode.PARAMS_ERROR, "题目 ID 不合法");
@@ -466,7 +458,7 @@ public class QuestionController {
         pyReqBody.set("content", question.getContent() != null ? question.getContent() : "");
         pyReqBody.set("answer", question.getAnswer() != null ? question.getAnswer() : "");
         pyReqBody.set("user_message", aiChatRequest.getUserMessage());
-        
+
         // 处理聊天记录
         pyReqBody.set("chat_history", aiChatRequest.getChatHistory() != null ? aiChatRequest.getChatHistory() : new java.util.ArrayList<>());
 
@@ -501,4 +493,25 @@ public class QuestionController {
 
         return ResultUtils.success(result);
     }
+
+    /**
+     * 智能答疑 限流处理：触发并发规则时快速拒绝
+     */
+    public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChatBlockHandler(@RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest, BlockException ex) {
+        log.warn("AI 答疑触发限流：{}", ex.getMessage());
+        com.sht.stsq.model.vo.QuestionAiChatResult result = new com.sht.stsq.model.vo.QuestionAiChatResult();
+        result.setAiReply("⚠️ 当前咨询人数过多，系统触发限流保护，请您稍等几秒后再试~");
+        return ResultUtils.success(result);
+    }
+
+    /**
+     * 智能答疑 降级处理：调用超时或报错时兜底
+     */
+    public BaseResponse<com.sht.stsq.model.vo.QuestionAiChatResult> aiChatFallback(@RequestBody com.sht.stsq.model.dto.question.QuestionAiChatRequest aiChatRequest, Throwable ex) {
+        log.error("触发 AI 答疑降级：{}", ex.getMessage());
+        com.sht.stsq.model.vo.QuestionAiChatResult result = new com.sht.stsq.model.vo.QuestionAiChatResult();
+        result.setAiReply("🌧️ 抱歉，AI 导师的大脑暂时离线了（服务开小差）。请稍后再向我提问吧！");
+        return ResultUtils.success(result);
+    }
 }
+

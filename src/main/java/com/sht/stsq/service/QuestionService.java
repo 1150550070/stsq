@@ -3,8 +3,10 @@ package com.sht.stsq.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.sht.stsq.model.dto.question.QuestionAiOptimizeRequest;
 import com.sht.stsq.model.dto.question.QuestionQueryRequest;
 import com.sht.stsq.model.entity.Question;
+import com.sht.stsq.model.vo.QuestionAiOptimizeResult;
 import com.sht.stsq.model.vo.QuestionVO;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -66,4 +68,6 @@ public interface QuestionService extends IService<Question> {
 
 
     void batchDeleteQuestions(List<Long> questionIdList);
+
+    QuestionAiOptimizeResult aiOptimizeQuestion(QuestionAiOptimizeRequest optimizeRequest);
 }
